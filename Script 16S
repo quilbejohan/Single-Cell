@@ -1,0 +1,132 @@
+QIIME2 
+
+#!/bin/bash
+#SBATCH --partition normal
+#SBATCH --mem=100g
+#SBATCH -c 40
+#SBATCH --time=06:0:0
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate qiime2-2020.11
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.txt \
+  --output-path paired-end-demux.qza \
+  --input-format PairedEndFastqManifestPhred33V2 \
+qiime demux summarize \
+  --i-data ./paired-end-demux.qza \
+  --o-visualization ./paired-end-demux.qzv
+conda deactivate
+
+#!/bin/bash
+#SBATCH --partition normal
+#SBATCH --mem=100g
+#SBATCH -c 40
+#SBATCH --time=10:0:0
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate qiime2-2020.11
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ./paired-end-demux.qza \
+  --p-trim-left-f 2 \
+  --p-trunc-len-f 246 \
+  --p-trim-left-r 2 \
+  --p-trunc-len-r 245 \
+  --p-max-ee-f 2 \
+  --p-max-ee-r 2 \
+  --p-n-threads 0 \
+  --o-table ./dada2_table.qza \
+  --o-representative-sequences ./dada2_repseqs.qza \
+  --o-denoising-stats ./dada2_stats.qza
+conda deactivate
+
+#!/bin/bash
+#SBATCH --partition normal
+#SBATCH --mem=100g
+#SBATCH -c 10
+#SBATCH --time=01:0:0
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate qiime2-2020.11
+qiime metadata tabulate \
+ --m-input-file ./dada2_stats.qza \
+ --o-visualization  ./dada2_stats.qzv \
+qiime feature-table summarize \
+  --i-table ./dada2_table.qza \
+  --m-sample-metadata-file metadata.txt \
+  --o-visualization ./dada2_table.qzv
+qiime feature-table tabulate-seqs \
+ --i-data ./dada2_repseqs.qza \
+ --o-visualization ./dada2_repseqs.qzv
+conda deactivate
+
+#!/bin/bash
+#SBATCH --partition normal
+#SBATCH --mem=100g
+#SBATCH -c 40
+#SBATCH --time=06:0:0
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate qiime2-2020.11
+## Multiple alignment of representative sequences
+qiime alignment mafft \
+  --i-sequences ./dada2_repseqs.qza \
+  --o-alignment ./aligned-rep-seqs.qza
+## Remove poor alignment
+qiime alignment mask \
+  --i-alignment ./aligned-rep-seqs.qza \
+  --o-masked-alignment ./masked-aligned-rep-seqs.qza
+conda deactivate
+
+#!/bin/bash
+#SBATCH --partition normal
+#SBATCH --mem=30g
+#SBATCH -c 24
+#SBATCH --time=01:0:0
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate qiime2-2020.11
+qiime tools import \
+--type 'FeatureData[Sequence]' \
+--input-format DNAFASTAFormat \
+--input-path dna-seq-MiniSyncom.fa \
+--output-path dna-seq-MiniSynCom.qza
+qiime vsearch cluster-features-open-reference \
+  --i-table dada2_table.qza \
+  --i-sequences dada2_repseqs.qza \
+  --i-reference-sequences dna-seq-MiniSynCom.qza \
+  --p-perc-identity 0.99 \
+  --o-clustered-table table_99.qza \
+  --o-clustered-sequences repseq_99.qza \
+  --o-new-reference-sequences new-ref-seqs_99.qza
+conda deactivate
+
+
+
+R
+
+#OTU table
+table1 = read_qza("table_99.qza")
+table2=table1$data
+write.csv(x=table2, file="dada2_table_SingleCell.csv", row.names=T, col.names=T, sep = ",", dec =".")
+d.in = read.csv("dada2_table_SingleCell.csv", header=T, row.names=1, sep = ";", dec = ".")
+
+# Filtering----
+d.in = d.in[, colSums(d.in) > 1999]
+filtered2 = d.in[apply(d.in, 1, function(x) sum(x > 0)) >= 35, ] 
+Genotype = filtered2[1,]
+write.table(x=filtered2, file="dada2_table_SingleCell_filtered.csv", row.names=T, col.names=T, sep = ",", dec =".")
+d.es.clean2 = read.csv("dada2_table_SingleCell_filtered.csv", header=T, row.names=1, sep = ",", dec = ".")
+#Metadata
+metadata=read.delim("metadata.txt", row.names = 1)
+metadata = metadata[colnames(d.es.clean2), ]
+identical(row.names(metadata), colnames(d.es.clean2))
+
+#PhyloSeq object
+phy = phyloseq(otu_table(d.es.clean2, taxa_are_rows = TRUE), sample_data(metadata))
+phy_rar = rarefy_even_depth(phy, rngseed = 42, replace = FALSE)
+
+#PCA plot
+mds_1 = ordinate(phy_rar, method = 'MDS', distance = 'cao')
+mds_2 = ordinate(phy_rar, method = 'MDS', distance = 'bray')
+mds_df_2 = plot_ordination(phy_rar, mds_2, 'samples', axes = 1:8, justDF = TRUE)
+ggplot(mds_df_2, aes(mds_df_2$Axis.1, mds_df_2$Axis.2, colour=mds_df_2$Genotype)) + theme(legend.position="none") + ggtitle('SC samples')
+
+
+
+
